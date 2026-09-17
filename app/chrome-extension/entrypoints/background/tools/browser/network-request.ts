@@ -15,6 +15,9 @@ interface NetworkRequestToolParams {
   // Shape: { fields?: Record<string, string|number|boolean>, files?: Array<{ name: string, fileUrl?: string, filePath?: string, base64Data?: string, filename?: string, contentType?: string }> }
   // Or a compact array: [ [name, fileSpec, filename?], ... ] where fileSpec can be 'url:...', 'file:/abs/path', 'base64:...'
   formData?: any;
+  tabId?: number;
+  targetId?: string;
+  windowId?: number;
 }
 
 /**
@@ -39,11 +42,9 @@ class NetworkRequestTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]?.id) {
-        return createErrorResponse('No active tab found or tab has no ID.');
-      }
-      const activeTabId = tabs[0].id;
+      const tab = await this.resolveTargetTab(args);
+      if (!tab?.id) return createErrorResponse('No target tab found or tab has no ID.');
+      const activeTabId = tab.id;
 
       // Ensure content script is available in the target tab
       await this.injectContentScript(activeTabId, ['inject-scripts/network-helper.js']);

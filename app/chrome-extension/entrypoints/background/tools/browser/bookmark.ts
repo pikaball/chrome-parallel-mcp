@@ -20,6 +20,9 @@ interface BookmarkAddToolParams {
   title?: string; // Bookmark title, if not provided use page title
   parentId?: string; // Parent folder ID or path string (like "Work/Projects"), if not provided add to "Bookmarks Bar" folder
   createFolder?: boolean; // Whether to automatically create parent folder if it doesn't exist
+  tabId?: number;
+  targetId?: string;
+  windowId?: number;
 }
 
 /**
@@ -376,16 +379,15 @@ class BookmarkAddTool extends BaseBrowserToolExecutor {
       let bookmarkTitle = title;
 
       if (!bookmarkUrl) {
-        // Get current active tab
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tabs[0] || !tabs[0].url) {
+        const tab = await this.resolveTargetTab(args);
+        if (!tab.url) {
           // tab.url might be undefined (e.g., chrome:// pages)
           return createErrorResponse('No active tab with valid URL found, and no URL provided');
         }
 
-        bookmarkUrl = tabs[0].url;
+        bookmarkUrl = tab.url;
         if (!bookmarkTitle) {
-          bookmarkTitle = tabs[0].title || bookmarkUrl; // If tab title is empty, use URL as title
+          bookmarkTitle = tab.title || bookmarkUrl; // If tab title is empty, use URL as title
         }
       }
 

@@ -21,6 +21,7 @@ class FlowRunTool {
     const flow = await getFlow(flowId);
     if (!flow) return createErrorResponse(`Flow not found: ${flowId}`);
     const result = await runFlow(flow, {
+      tabId: args.tabId,
       tabTarget,
       refresh,
       captureNetwork,

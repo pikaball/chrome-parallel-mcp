@@ -11,6 +11,7 @@ interface FileUploadToolParams {
   fileName?: string; // Optional filename when using base64 or URL
   multiple?: boolean; // Whether to allow multiple files
   tabId?: number; // Target existing tab id
+  targetId?: string; // Logical multi-agent target id
   windowId?: number; // When no tabId, pick active tab from this window
 }
 
@@ -42,9 +43,7 @@ class FileUploadTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      // Resolve tab
-      const explicit = await this.tryGetTab(args.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id) return createErrorResponse('No active tab found');
       const tabId = tab.id;
 

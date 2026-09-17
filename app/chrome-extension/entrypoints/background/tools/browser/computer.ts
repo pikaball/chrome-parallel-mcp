@@ -73,6 +73,7 @@ interface ComputerParams {
   value?: string;
   frameId?: number; // Target frame for selector/ref resolution
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   windowId?: number;
   background?: boolean; // avoid focusing/activating
 }
@@ -227,8 +228,7 @@ class ComputerTool extends BaseBrowserToolExecutor {
     if (!params.action) return createErrorResponse('Action parameter is required');
 
     try {
-      const explicit = await this.tryGetTab(args.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id)
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
 
@@ -1278,13 +1278,15 @@ class ComputerTool extends BaseBrowserToolExecutor {
         }
       }
       case 'screenshot': {
-        // Reuse existing screenshot tool; it already supports base64 save option
-        const result = await screenshotTool.execute({
+        return screenshotTool.execute({
           name: 'computer',
+          tabId: tab.id,
+          targetId: params.targetId,
           storeBase64: true,
+          savePng: false,
           fullPage: false,
+          background: true,
         });
-        return result;
       }
       default:
         return createErrorResponse(`Unsupported action: ${params.action}`);

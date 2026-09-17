@@ -7,9 +7,9 @@ import {
   createImageBitmapFromUrl,
   cropAndResizeImage,
   stitchImages,
-  compressImage,
 } from '../../../../utils/image-utils';
 import { screenshotContextManager } from '@/utils/screenshot-context';
+import { cdpSessionManager } from '@/utils/cdp-session-manager';
 
 // Screenshot-specific constants
 const SCREENSHOT_CONSTANTS = {
@@ -44,9 +44,10 @@ if (typeof __MAX_CAP_RATE === 'number' && __MAX_CAP_RATE > 0) {
 }
 
 interface ScreenshotToolParams {
-  name: string;
+  name?: string;
   selector?: string;
   tabId?: number;
+  targetId?: string;
   background?: boolean;
   windowId?: number;
   width?: number;
@@ -115,16 +116,15 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
     const {
       name = 'screenshot',
       selector,
-      storeBase64 = false,
+      storeBase64 = true,
       fullPage = false,
-      savePng = true,
+      savePng = false,
     } = args;
 
     console.log(`Starting screenshot with options:`, args);
 
     // Resolve target tab (explicit or active)
-    const explicit = await this.tryGetTab(args.tabId);
-    const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+    const tab = await this.resolveTargetTab(args);
 
     // Check URL restrictions
     if (
@@ -147,22 +147,20 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
     let pageDetails: ScreenshotPageDetails | undefined;
 
     try {
-      const background = args.background === true;
-      // CDP path: background=true with simple viewport capture (no fullPage, no selector)
-      const canUseCdpCapture = background && !fullPage && !selector;
+      const canUseCdpCapture = !fullPage && !selector;
 
       // === Path 1: CDP viewport capture (no content script needed) ===
       if (canUseCdpCapture) {
         try {
           const tabId = tab.id!;
-          const { cdpSessionManager } = await import('@/utils/cdp-session-manager');
           await cdpSessionManager.withSession(tabId, 'screenshot', async () => {
             const metrics: any = await cdpSessionManager.sendCommand(
               tabId,
               'Page.getLayoutMetrics',
               {},
             );
-            const viewport = metrics?.layoutViewport ||
+            const viewport = metrics?.cssLayoutViewport ||
+              metrics?.layoutViewport ||
               metrics?.visualViewport || {
                 clientWidth: 800,
                 clientHeight: 600,
@@ -171,6 +169,8 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
               };
             const shot: any = await cdpSessionManager.sendCommand(tabId, 'Page.captureScreenshot', {
               format: 'png',
+              fromSurface: true,
+              captureBeyondViewport: false,
             });
             const base64Data = typeof shot?.data === 'string' ? shot.data : '';
             if (!base64Data) {
@@ -181,7 +181,9 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
             finalImageHeightCss = Math.round(viewport.clientHeight || 600);
           });
         } catch (e) {
-          console.warn('CDP viewport capture failed, falling back to helper path:', e);
+          throw new Error(
+            `CDP viewport capture failed: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
       }
 
@@ -246,7 +248,7 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
         } else {
           // Visible area only
           this.logInfo('Capturing visible area...');
-          finalImageDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+          finalImageDataUrl = await this.captureTabViewport(tab.id!);
           finalImageWidthCss = pageDetails.viewportWidth;
           finalImageHeightCss = pageDetails.viewportHeight;
         }
@@ -256,10 +258,38 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
         throw new Error('Failed to capture image data');
       }
 
+      if (!fullPage && !selector) {
+        const bitmap = await createImageBitmapFromUrl(finalImageDataUrl);
+        const dpr = bitmap.width / (finalImageWidthCss || bitmap.width);
+        if (args.width || args.height) {
+          const width = args.width || (args.height! * bitmap.width) / bitmap.height;
+          const height = args.height || (args.width! * bitmap.height) / bitmap.width;
+          const canvas = await cropAndResizeImage(
+            finalImageDataUrl,
+            { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
+            dpr,
+            width,
+            height,
+          );
+          finalImageDataUrl = await canvasToDataURL(canvas);
+          results.imageWidth = canvas.width;
+          results.imageHeight = canvas.height;
+        } else {
+          results.imageWidth = bitmap.width;
+          results.imageHeight = bitmap.height;
+        }
+        bitmap.close();
+      }
+
       // 2. Process output
       // Update screenshot context for coordinate scaling by tools like chrome_computer
       try {
-        if (typeof finalImageWidthCss === 'number' && typeof finalImageHeightCss === 'number') {
+        if (
+          !fullPage &&
+          !selector &&
+          typeof finalImageWidthCss === 'number' &&
+          typeof finalImageHeightCss === 'number'
+        ) {
           let hostname = '';
           try {
             hostname = tab.url ? new URL(tab.url).hostname : '';
@@ -270,39 +300,19 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
           const viewportWidth = pageDetails?.viewportWidth ?? finalImageWidthCss;
           const viewportHeight = pageDetails?.viewportHeight ?? finalImageHeightCss;
           screenshotContextManager.setContext(tab.id!, {
-            screenshotWidth: finalImageWidthCss,
-            screenshotHeight: finalImageHeightCss,
+            screenshotWidth: results.imageWidth,
+            screenshotHeight: results.imageHeight,
             viewportWidth,
             viewportHeight,
             devicePixelRatio: pageDetails?.devicePixelRatio,
             hostname,
           });
+        } else {
+          screenshotContextManager.clear(tab.id!);
         }
       } catch (e) {
         console.warn('Failed to set screenshot context:', e);
       }
-      if (storeBase64 === true) {
-        // Compress image for base64 output to reduce size
-        const compressed = await compressImage(finalImageDataUrl, {
-          scale: 0.7, // Reduce dimensions by 30%
-          quality: 0.8, // 80% quality for good balance
-          format: 'image/jpeg', // JPEG for better compression
-        });
-
-        // Include base64 data in response (without prefix)
-        const base64Data = compressed.dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
-        results.base64 = base64Data;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ base64Data, mimeType: compressed.mimeType }),
-            },
-          ],
-          isError: false,
-        };
-      }
-
       if (savePng === true) {
         // Save PNG file to downloads
         this.logInfo('Saving PNG...');
@@ -369,10 +379,21 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
 
     return {
       content: [
+        ...(storeBase64 && finalImageDataUrl
+          ? [
+              {
+                type: 'image' as const,
+                data: finalImageDataUrl.replace(/^data:image\/[^;]+;base64,/, ''),
+                mimeType: 'image/png',
+              },
+            ]
+          : []),
         {
           type: 'text',
           text: JSON.stringify({
             success: true,
+            captureBackend: 'cdp-tab-v1',
+            targetId: args.targetId?.trim(),
             message: `Screenshot [${name}] captured successfully`,
             tabId: tab.id,
             url: tab.url,
@@ -390,6 +411,16 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
    */
   private logInfo(message: string) {
     console.log(`[Screenshot Tool] ${message}`);
+  }
+
+  private async captureTabViewport(tabId: number): Promise<string> {
+    const shot = await cdpSessionManager.sendCommand<{ data?: string }>(
+      tabId,
+      'Page.captureScreenshot',
+      { format: 'png', fromSurface: true, captureBeyondViewport: false },
+    );
+    if (!shot?.data) throw new Error('CDP Page.captureScreenshot returned empty data');
+    return `data:image/png;base64,${shot.data}`;
   }
 
   /**
@@ -419,7 +450,7 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
     // Small delay to ensure element is fully rendered after scrollIntoView
     await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_CONSTANTS.SCRIPT_INIT_DELAY));
 
-    const visibleCaptureDataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
+    const visibleCaptureDataUrl = await this.captureTabViewport(tabId);
     if (!visibleCaptureDataUrl) {
       throw new Error('Failed to capture visible tab for element cropping');
     }
@@ -490,7 +521,7 @@ class ScreenshotTool extends BaseBrowserToolExecutor {
         setTimeout(resolve, SCREENSHOT_CONSTANTS.CAPTURE_STITCH_DELAY_MS),
       );
 
-      const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
+      const dataUrl = await this.captureTabViewport(tabId);
       if (!dataUrl) throw new Error('captureVisibleTab returned empty during full page capture');
 
       const yOffsetPx = currentScrollYCss * dpr;

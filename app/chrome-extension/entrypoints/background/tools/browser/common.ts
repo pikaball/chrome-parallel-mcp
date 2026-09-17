@@ -14,6 +14,7 @@ interface NavigateToolParams {
   height?: number;
   refresh?: boolean;
   tabId?: number;
+  targetId?: string;
   windowId?: number;
   background?: boolean; // when true, do not activate tab or focus window
 }
@@ -59,9 +60,7 @@ class NavigateTool extends BaseBrowserToolExecutor {
       // Handle refresh option first
       if (refresh) {
         console.log('Refreshing current active tab');
-        const explicit = await this.tryGetTab(tabId);
-        // Get target tab (explicit or active in provided window)
-        const targetTab = explicit || (await this.getActiveTabOrThrowInWindow(windowId));
+        const targetTab = await this.resolveTargetTab({ tabId, targetId: args.targetId, windowId });
         if (!targetTab.id) return createErrorResponse('No target tab found to refresh');
         await chrome.tabs.reload(targetTab.id);
 
@@ -97,8 +96,7 @@ class NavigateTool extends BaseBrowserToolExecutor {
 
       // Handle history navigation: url="back" or url="forward"
       if (url === 'back' || url === 'forward') {
-        const explicitTab = await this.tryGetTab(tabId);
-        const targetTab = explicitTab || (await this.getActiveTabOrThrowInWindow(windowId));
+        const targetTab = await this.resolveTargetTab({ tabId, targetId: args.targetId, windowId });
         if (!targetTab.id) {
           return createErrorResponse('No target tab found for history navigation');
         }
@@ -250,7 +248,10 @@ class NavigateTool extends BaseBrowserToolExecutor {
         return best.tab;
       };
 
-      const explicitTab = await this.tryGetTab(tabId);
+      const explicitTab =
+        tabId !== undefined || args.targetId !== undefined
+          ? await this.resolveTargetTab(args)
+          : null;
       const existingTab = explicitTab || pickBestMatch(url, candidateTabs);
       if (existingTab?.id !== undefined) {
         console.log(
@@ -443,6 +444,8 @@ export const navigateTool = new NavigateTool();
 
 interface CloseTabsToolParams {
   tabIds?: number[];
+  targetId?: string;
+  windowId?: number;
   url?: string;
 }
 
@@ -453,7 +456,12 @@ class CloseTabsTool extends BaseBrowserToolExecutor {
   name = TOOL_NAMES.BROWSER.CLOSE_TABS;
 
   async execute(args: CloseTabsToolParams): Promise<ToolResult> {
-    const { tabIds, url } = args;
+    const { tabIds, targetId, url } = args;
+    if (targetId !== undefined && (url !== undefined || tabIds?.length)) {
+      return createErrorResponse(
+        'When targetId is provided, close only its bound tab; omit url and tabIds.',
+      );
+    }
     let urlPattern = url;
     console.log(`Attempting to close tabs with options:`, args);
 
@@ -532,13 +540,20 @@ class CloseTabsTool extends BaseBrowserToolExecutor {
         };
       }
 
+      const resolvedTabIds = [...(tabIds || [])];
+      if (typeof targetId === 'string') {
+        const targetTab = await this.resolveTargetTab(args);
+        if (!targetTab.id) return createErrorResponse(`No tab found for targetId: ${targetId}`);
+        resolvedTabIds.push(targetTab.id);
+      }
+
       // If tabIds are provided, close those tabs
-      if (tabIds && tabIds.length > 0) {
-        console.log(`Closing tabs with IDs: ${tabIds.join(', ')}`);
+      if (resolvedTabIds.length > 0) {
+        console.log(`Closing tabs with IDs: ${resolvedTabIds.join(', ')}`);
 
         // Verify that all tabIds exist
         const existingTabs = await Promise.all(
-          tabIds.map(async (tabId) => {
+          resolvedTabIds.map(async (tabId) => {
             try {
               return await chrome.tabs.get(tabId);
             } catch (error) {
@@ -580,7 +595,7 @@ class CloseTabsTool extends BaseBrowserToolExecutor {
                 message: `Closed ${validTabIds.length} tabs`,
                 closedCount: validTabIds.length,
                 closedTabIds: validTabIds,
-                invalidTabIds: tabIds.filter((id) => !validTabIds.includes(id)),
+                invalidTabIds: resolvedTabIds.filter((id) => !validTabIds.includes(id)),
               }),
             },
           ],
@@ -624,7 +639,8 @@ class CloseTabsTool extends BaseBrowserToolExecutor {
 export const closeTabsTool = new CloseTabsTool();
 
 interface SwitchTabToolParams {
-  tabId: number;
+  tabId?: number;
+  targetId?: string;
   windowId?: number;
 }
 
@@ -635,7 +651,11 @@ class SwitchTabTool extends BaseBrowserToolExecutor {
   name = TOOL_NAMES.BROWSER.SWITCH_TAB;
 
   async execute(args: SwitchTabToolParams): Promise<ToolResult> {
-    const { tabId, windowId } = args;
+    const { windowId } = args;
+    const targetTab = await this.resolveTargetTab(args);
+    const tabId = targetTab.id;
+
+    if (!tabId) return createErrorResponse('No target tab found to switch to');
 
     console.log(`Attempting to switch to tab ID: ${tabId} in window ID: ${windowId}`);
 

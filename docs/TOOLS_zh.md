@@ -1,11 +1,24 @@
-# Chrome MCP Server API 参考 📚
+# Chrome Parallel MCP 工具参考
+
+本分支安装、更新和并发限制见 [README](../README_zh.md)。当前 [工具 schema](../packages/shared/src/tools.ts) 为准；下方继承的旧示例可能省略现在必需的 `targetId`，或包含未向 MCP 暴露的内部工具。
+
+两种截图输出模式都要求新版扩展返回 target 捕获元数据。兼容旧图片格式不意味着允许未经验证的活动页截图；更新后须重新加载两端。
 
 所有可用工具及其参数的完整参考。
+
+## Target 初始化与截图
+
+截图默认使用推荐的 `output: "file"`：native server 将 PNG 或 JPEG 写入 `/tmp/chrome-mcp-screenshots`，返回绝对路径 `filePath` 和 `mimeType`，扩展名对应为 `.png` 或 `.jpg`。兼容 MCP 图片内容和旧版 JSON `base64Data` 返回结构。先用读图工具读取该文件；如果无法访问 native server 所在机器的路径，再用 `output: "base64"` 重试，直接获取原始图片响应。此选项同时适用于 `chrome_screenshot` 和 `chrome_computer(action="screenshot")`。显式 `output` 优先于旧参数 `storeBase64`；省略 `output` 且 `storeBase64: true` 时返回 base64。文件保留至主动删除或主机清理；`savePng` 是额外的浏览器下载选项。
+
+页面操作前，先调用 `chrome_target_create({"targetId":"agent-a-main","url":"https://example.com"})`，它会同时创建并绑定新标签页，无须再 bind。使用已有页面时，先调用 `get_windows_and_tabs({})`，再调用 `chrome_target_bind({"targetId":"agent-a-main","tabId":123})`。等待成功后，后续工具始终传入同一个 ID。并发 agent 各用独立 ID 和标签页。`get_windows_and_tabs` 和 `chrome_target_list` 无须 target 参数。
+
+未知、空白、已关闭或不匹配的 target 会报错，不会回退到活动页。通常省略 `tabId`、`windowId`；若提供，必须与绑定一致。已存在的 ID 需 release 后才能绑定其他页，同一页不能绑定两个 ID。目前绑定只在扩展 service worker 生命周期内有效，重启后需重新创建或绑定。
+
+调用 `chrome_screenshot({"targetId":"agent-a-main"})` 或 `chrome_computer({"targetId":"agent-a-main","action":"screenshot"})` 可获得截图文件路径。前者还支持 `fullPage`、`selector`、`width`、`height`、`maxHeight`、`output`（默认 file）和 `savePng`（默认 false）。截图通过 CDP 指向绑定页面，调试器失败时返回错误。目前 GIF 录制仅支持一个活动 target，其他 target 的操作会被拒绝。`chrome_close_tabs` 携带 target 时只关闭绑定页，须省略 `url` 和 `tabIds`。
 
 ## 📋 目录
 
 - [浏览器管理](#浏览器管理)
-- [截图和视觉](#截图和视觉)
 - [网络监控](#网络监控)
 - [内容分析](#内容分析)
 - [交互操作](#交互操作)
@@ -100,6 +113,60 @@
 }
 ```
 
+### 多 agent 目标隔离
+
+渗透或自动化探索场景下，多个 subagent 不应依赖“当前活动标签页”。推荐每个 subagent 先创建或绑定自己的逻辑目标，然后所有页面相关工具都传同一个 `targetId`。
+
+#### `chrome_target_create`
+
+创建一个标签页或窗口，并绑定到逻辑 `targetId`。
+
+**参数**：
+
+- `targetId` (字符串，必需)：逻辑目标 ID，例如 `agent-a-main`。
+- `url` (字符串，可选)：初始 URL，默认 `about:blank`。
+- `newWindow` (布尔值，可选)：是否创建新窗口。
+- `windowId` (数字，可选)：在指定窗口中创建标签页。
+- `background` (布尔值，可选)：是否避免激活标签页或聚焦窗口，默认 `true`。
+
+**示例**：
+
+```json
+{
+  "targetId": "agent-a-main",
+  "url": "https://example.com",
+  "background": true
+}
+```
+
+#### `chrome_target_bind`
+
+把已有标签页绑定到逻辑 `targetId`。
+
+```json
+{
+  "targetId": "agent-b-main",
+  "tabId": 456
+}
+```
+
+#### `chrome_target_list`
+
+列出当前 `targetId -> tabId` 绑定。
+
+#### `chrome_target_release`
+
+释放目标绑定，可选关闭对应标签页。
+
+```json
+{
+  "targetId": "agent-a-main",
+  "closeTab": false
+}
+```
+
+页面工具必须传入已创建或绑定的 `targetId`；`tabId`、`windowId` 仅用于一致性校验，不能覆盖 target。不要依赖 `chrome_switch_tab` 路由操作。
+
 ### `chrome_go_back_or_forward`
 
 浏览器历史导航。
@@ -115,46 +182,6 @@
 {
   "direction": "back",
   "tabId": 123
-}
-```
-
-## 📸 截图和视觉
-
-### `chrome_screenshot`
-
-使用各种选项进行高级截图。
-
-**参数**：
-
-- `name` (字符串，可选)：截图文件名
-- `selector` (字符串，可选)：元素截图的 CSS 选择器
-- `width` (数字，可选)：宽度（像素，默认：800）
-- `height` (数字，可选)：高度（像素，默认：600）
-- `storeBase64` (布尔值，可选)：返回 base64 数据（默认：false）
-- `fullPage` (布尔值，可选)：捕获整个页面（默认：true）
-
-**示例**：
-
-```json
-{
-  "selector": ".main-content",
-  "fullPage": true,
-  "storeBase64": true,
-  "width": 1920,
-  "height": 1080
-}
-```
-
-**响应**：
-
-```json
-{
-  "success": true,
-  "base64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
-  "dimensions": {
-    "width": 1920,
-    "height": 1080
-  }
 }
 ```
 
@@ -513,31 +540,25 @@ await callTool('chrome_navigate', {
   url: 'https://example.com',
 });
 
-// 2. 截图
-const screenshot = await callTool('chrome_screenshot', {
-  fullPage: true,
-  storeBase64: true,
-});
-
-// 3. 开始网络监控
+// 2. 开始网络监控
 await callTool('chrome_network_capture_start', {
   maxCaptureTime: 30000,
 });
 
-// 4. 与页面交互
+// 3. 与页面交互
 await callTool('chrome_click_element', {
   selector: '#load-data-button',
 });
 
-// 5. 语义搜索内容
+// 4. 语义搜索内容
 const searchResults = await callTool('search_tabs_content', {
   query: '用户数据分析',
 });
 
-// 6. 停止网络捕获
+// 5. 停止网络捕获
 const networkData = await callTool('chrome_network_capture_stop');
 
-// 7. 保存书签
+// 6. 保存书签
 await callTool('chrome_bookmark_add', {
   title: '数据分析页面',
   parentId: '工作/分析',

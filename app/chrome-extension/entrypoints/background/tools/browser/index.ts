@@ -1,7 +1,12 @@
 export { navigateTool, closeTabsTool, switchTabTool } from './common';
-export { windowTool } from './window';
+export {
+  windowTool,
+  targetCreateTool,
+  targetBindTool,
+  targetListTool,
+  targetReleaseTool,
+} from './window';
 export { vectorSearchTabsContentTool as searchTabsContentTool } from './vector-search';
-export { screenshotTool } from './screenshot';
 export { webFetcherTool, getInteractiveElementsTool } from './web-fetcher';
 export { clickTool, fillTool } from './interaction';
 export { elementPickerTool } from './element-picker';
@@ -19,6 +24,7 @@ export { consoleTool } from './console';
 export { fileUploadTool } from './file-upload';
 export { readPageTool } from './read-page';
 export { computerTool } from './computer';
+export { screenshotTool } from './screenshot';
 export { handleDialogTool } from './dialog';
 export { handleDownloadTool } from './download';
 export { userscriptTool } from './userscript';

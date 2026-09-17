@@ -54,10 +54,22 @@ export function expandTemplatesDeep<T = any>(value: T, scope: Record<string, any
 }
 
 export async function ensureTab(options: {
+  tabId?: number;
   tabTarget?: 'current' | 'new';
   startUrl?: string;
   refresh?: boolean;
 }): Promise<{ tabId: number; url?: string }> {
+  if (options.tabId !== undefined) {
+    let tab = await chrome.tabs.get(options.tabId);
+    if (options.startUrl) {
+      tab =
+        (await chrome.tabs.update(options.tabId, { url: options.startUrl })) ||
+        (await chrome.tabs.get(options.tabId));
+    } else if (options.refresh) {
+      await chrome.tabs.reload(options.tabId);
+    }
+    return { tabId: options.tabId, url: tab.url };
+  }
   const target = options.tabTarget || 'current';
   const startUrl = options.startUrl;
   const isWebUrl = (u?: string | null) => !!u && /^(https?:|file:)/i.test(u);

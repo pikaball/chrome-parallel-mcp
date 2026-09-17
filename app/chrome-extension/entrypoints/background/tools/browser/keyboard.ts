@@ -10,6 +10,7 @@ interface KeyboardToolParams {
   selectorType?: 'css' | 'xpath'; // Type of selector (default: 'css')
   delay?: number; // Optional: delay between keystrokes in milliseconds
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   windowId?: number; // when no tabId, pick active tab from this window
   frameId?: number; // target frame id for iframe support
 }
@@ -35,8 +36,7 @@ class KeyboardTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      const explicit = await this.tryGetTab(args.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id) {
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
       }

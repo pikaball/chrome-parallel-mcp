@@ -11,6 +11,7 @@ type ConsoleMode = 'snapshot' | 'buffer';
 interface ConsoleToolParams {
   url?: string;
   tabId?: number;
+  targetId?: string;
   background?: boolean;
   windowId?: number;
   includeExceptions?: boolean;
@@ -172,9 +173,9 @@ class ConsoleTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      if (typeof tabId === 'number') {
+      if (typeof tabId === 'number' || typeof (args as any).targetId === 'string') {
         // Use explicit tab
-        const t = await chrome.tabs.get(tabId);
+        const t = await this.resolveTargetTab(args as any);
         if (!t?.id) return createErrorResponse('Failed to identify target tab.');
         targetTab = t;
       } else if (url) {

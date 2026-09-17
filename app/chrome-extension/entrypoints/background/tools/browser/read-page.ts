@@ -16,6 +16,7 @@ interface ReadPageParams {
   depth?: number; // maximum DOM depth to traverse (0 = root only)
   refId?: string; // focus on subtree rooted at this refId
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   windowId?: number; // when no tabId, pick active tab from this window
 }
 
@@ -50,8 +51,7 @@ class ReadPageTool extends BaseBrowserToolExecutor {
       const standardTips =
         "If the specific element you need is missing from the returned data, use the 'screenshot' tool to capture the current viewport and confirm the element's on-screen coordinates. Also note: 'markedElements' are user-marked elements and have the highest priority when choosing targets.";
 
-      const explicit = await this.tryGetTab(args?.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args?.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id)
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
 

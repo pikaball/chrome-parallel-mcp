@@ -47,6 +47,8 @@ type ErrorKind =
 interface JavaScriptToolParams {
   code: string;
   tabId?: number;
+  targetId?: string;
+  windowId?: number;
   timeoutMs?: number;
   maxOutputBytes?: number;
 }
@@ -414,7 +416,7 @@ class JavaScriptTool extends BaseBrowserToolExecutor {
       }
 
       // Resolve target tab
-      const tab = await this.resolveTargetTab(args.tabId);
+      const tab = await this.resolveTargetTab(args);
       if (!tab) {
         return createErrorResponse(
           typeof args.tabId === 'number' ? `Tab not found: ${args.tabId}` : 'No active tab found',
@@ -463,17 +465,6 @@ class JavaScriptTool extends BaseBrowserToolExecutor {
       return createErrorResponse(
         `JavaScript tool error: ${error instanceof Error ? error.message : String(error)}`,
       );
-    }
-  }
-
-  private async resolveTargetTab(tabId?: number): Promise<chrome.tabs.Tab | null> {
-    if (typeof tabId === 'number') {
-      return this.tryGetTab(tabId);
-    }
-    try {
-      return await this.getActiveTabOrThrow();
-    } catch {
-      return null;
     }
   }
 

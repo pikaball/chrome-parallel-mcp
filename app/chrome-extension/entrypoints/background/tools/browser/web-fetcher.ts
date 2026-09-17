@@ -9,6 +9,7 @@ interface WebFetcherToolParams {
   url?: string; // optional URL to fetch content from (if not provided, uses active tab)
   selector?: string; // optional CSS selector to get content from a specific element
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   background?: boolean; // do not activate/focus
   windowId?: number; // target window id to pick active tab or create tab
 }
@@ -40,8 +41,8 @@ class WebFetcherTool extends BaseBrowserToolExecutor {
       // Get tab to fetch content from
       let tab;
 
-      if (typeof explicitTabId === 'number') {
-        tab = await chrome.tabs.get(explicitTabId);
+      if (typeof explicitTabId === 'number' || args.targetId) {
+        tab = await this.resolveTargetTab(args);
       } else if (url) {
         // If URL is provided, check if it's already open
         console.log(`Checking if URL is already open: ${url}`);
@@ -172,6 +173,9 @@ interface GetInteractiveElementsToolParams {
   selector?: string; // CSS selector to filter interactive elements
   includeCoordinates?: boolean; // Include element coordinates in the response (default: true)
   types?: string[]; // Types of interactive elements to include (default: all types)
+  tabId?: number;
+  targetId?: string;
+  windowId?: number;
 }
 
 class GetInteractiveElementsTool extends BaseBrowserToolExecutor {
@@ -186,13 +190,7 @@ class GetInteractiveElementsTool extends BaseBrowserToolExecutor {
     console.log(`Starting get interactive elements with options:`, args);
 
     try {
-      // Get current tab
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]) {
-        return createErrorResponse('No active tab found');
-      }
-
-      const tab = tabs[0];
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id) {
         return createErrorResponse('Active tab has no ID');
       }

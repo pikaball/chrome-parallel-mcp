@@ -5,8 +5,20 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import nativeMessagingHostInstance from '../native-messaging-host';
-import { NativeMessageType, TOOL_SCHEMAS } from 'chrome-mcp-shared';
+import {
+  NativeMessageType,
+  TARGET_SETUP_DESCRIPTION,
+  TOOL_NAMES,
+  TOOL_SCHEMAS,
+} from 'chrome-mcp-shared';
+import {
+  formatScreenshotOutput,
+  screenshotOutputMode,
+  verifyScreenshotTarget,
+} from './screenshot-output';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+
+const toolSchemaByName = new Map(TOOL_SCHEMAS.map((tool) => [tool.name, tool]));
 
 async function listDynamicFlowTools(): Promise<Tool[]> {
   try {
@@ -51,9 +63,16 @@ async function listDynamicFlowTools(): Promise<Tool[]> {
         properties['captureNetwork'] = { type: 'boolean', default: false };
         properties['returnLogs'] = { type: 'boolean', default: false };
         properties['timeoutMs'] = { type: 'number', minimum: 0 };
+        properties['targetId'] = {
+          type: 'string',
+          minLength: 1,
+          pattern: '\\S',
+          description: TARGET_SETUP_DESCRIPTION,
+        };
+        required.push('targetId');
         const tool: Tool = {
           name,
-          description,
+          description: `${TARGET_SETUP_DESCRIPTION}\n\n${description}`,
           inputSchema: { type: 'object', properties, required },
         };
         tools.push(tool);
@@ -81,8 +100,29 @@ export const setupTools = (server: Server) => {
 
 const handleToolCall = async (name: string, args: any): Promise<CallToolResult> => {
   try {
+    if (
+      toolSchemaByName.get(name)?.inputSchema.required?.includes('targetId') &&
+      (typeof args?.targetId !== 'string' || !args.targetId.trim())
+    ) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error calling tool: ${name} requires a non-empty targetId. First call chrome_target_create({targetId: "unique-agent-id"}) to create and bind a new tab, OR get_windows_and_tabs({}) then chrome_target_bind({targetId: "unique-agent-id", tabId: <existing tab>}). Reuse that targetId in subsequent calls.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // If calling a dynamic flow tool (name starts with flow.), proxy to common flow-run tool
     if (name && name.startsWith('flow.')) {
+      if (typeof args?.targetId !== 'string' || !args.targetId.trim()) {
+        return {
+          content: [{ type: 'text', text: `Error calling tool: ${name} requires targetId.` }],
+          isError: true,
+        };
+      }
       // We need to resolve flow by slug to ID
       try {
         const resp = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
@@ -94,7 +134,7 @@ const handleToolCall = async (name: string, args: any): Promise<CallToolResult> 
         const slug = name.slice('flow.'.length);
         const match = items.find((it: any) => it.slug === slug);
         if (!match) throw new Error(`Flow not found for tool ${name}`);
-        const flowArgs = { flowId: match.id, args };
+        const flowArgs = { flowId: match.id, args, targetId: args.targetId };
         const proxyRes = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
           { name: 'record_replay_flow_run', args: flowArgs },
           NativeMessageType.CALL_TOOL,
@@ -117,17 +157,24 @@ const handleToolCall = async (name: string, args: any): Promise<CallToolResult> 
         };
       }
     }
+    const isScreenshot =
+      name === TOOL_NAMES.BROWSER.SCREENSHOT ||
+      (name === TOOL_NAMES.BROWSER.COMPUTER && args?.action === 'screenshot');
+    const output = isScreenshot ? screenshotOutputMode(args) : undefined;
+    // The extension supplies image bytes; only the native host can write /tmp files.
+    const extensionArgs = isScreenshot ? { ...args, storeBase64: true, background: true } : args;
     // 发送请求到Chrome扩展并等待响应
     const response = await nativeMessagingHostInstance.sendRequestToExtensionAndWait(
       {
-        name,
-        args,
+        name: isScreenshot ? TOOL_NAMES.BROWSER.SCREENSHOT : name,
+        args: extensionArgs,
       },
       NativeMessageType.CALL_TOOL,
       120000, // 延长到 120 秒，避免性能分析等长任务超时
     );
     if (response.status === 'success') {
-      return response.data;
+      if (isScreenshot) verifyScreenshotTarget(response.data, args.targetId);
+      return output ? await formatScreenshotOutput(response.data, output) : response.data;
     } else {
       return {
         content: [

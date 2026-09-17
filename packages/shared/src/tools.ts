@@ -3,6 +3,10 @@ import { type Tool } from '@modelcontextprotocol/sdk/types.js';
 export const TOOL_NAMES = {
   BROWSER: {
     GET_WINDOWS_AND_TABS: 'get_windows_and_tabs',
+    TARGET_CREATE: 'chrome_target_create',
+    TARGET_BIND: 'chrome_target_bind',
+    TARGET_LIST: 'chrome_target_list',
+    TARGET_RELEASE: 'chrome_target_release',
     SEARCH_TABS_CONTENT: 'search_tabs_content',
     NAVIGATE: 'chrome_navigate',
     SCREENSHOT: 'chrome_screenshot',
@@ -46,14 +50,148 @@ export const TOOL_NAMES = {
   },
 };
 
-export const TOOL_SCHEMAS: Tool[] = [
+export const TARGET_SETUP_DESCRIPTION =
+  'REQUIRED BEFORE USE: call chrome_target_create({targetId: "unique-agent-id", url: "https://example.com"}) to create AND bind a new tab, OR call get_windows_and_tabs({}) then chrome_target_bind({targetId: "unique-agent-id", tabId: <existing tab ID>}) to use an existing tab. Wait for success, then reuse that exact targetId on every page tool call. An arbitrary string is not a bound target. Each concurrent agent must use its own unique targetId and separate tab. Use chrome_target_list({}) to inspect bindings; do not use chrome_switch_tab for routing.';
+
+const SCREENSHOT_OUTPUT_DESCRIPTION =
+  'Screenshot output: "file" (default, RECOMMENDED) saves a PNG or JPEG under /tmp/chrome-mcp-screenshots on the native-server machine and returns its absolute filePath and mimeType; the filename extension matches the returned image format. First read that file with your image-reading tool. If the file is inaccessible (for example, your tools run on another machine), repeat the call with output="base64" to receive image data directly (MCP image content, or legacy JSON base64Data and mimeType). Do not assume inline MCP images are visible in every client.';
+const SCREENSHOT_OUTPUT_SCHEMA = {
+  type: 'string',
+  enum: ['file', 'base64'],
+  default: 'file',
+  description: SCREENSHOT_OUTPUT_DESCRIPTION,
+};
+
+const withRequiredTargetId = (tool: Tool): Tool => {
+  if (tool.name === TOOL_NAMES.BROWSER.COMPUTER) {
+    tool = {
+      ...tool,
+      description: `${tool.description}\nFor action="screenshot": ${SCREENSHOT_OUTPUT_DESCRIPTION}`,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: { ...tool.inputSchema.properties, output: SCREENSHOT_OUTPUT_SCHEMA },
+      },
+    };
+  }
+  if (
+    [
+      TOOL_NAMES.BROWSER.GET_WINDOWS_AND_TABS,
+      TOOL_NAMES.BROWSER.TARGET_LIST,
+      TOOL_NAMES.BROWSER.TARGET_CREATE,
+      TOOL_NAMES.BROWSER.TARGET_BIND,
+      TOOL_NAMES.BROWSER.TARGET_RELEASE,
+    ].includes(tool.name)
+  )
+    return tool;
+  const properties = tool.inputSchema.properties || {};
+  const targetIdProperty = {
+    type: 'string',
+    minLength: 1,
+    pattern: '\\S',
+    description: TARGET_SETUP_DESCRIPTION,
+  };
+
+  const required = Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required : [];
+
+  return {
+    ...tool,
+    description: `${TARGET_SETUP_DESCRIPTION}\n\n${tool.description || ''}`,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...properties,
+        targetId: targetIdProperty,
+        ...('tabId' in properties
+          ? {
+              tabId: {
+                type: 'number',
+                description:
+                  'Optional consistency check: must match the tab bound to targetId. Omit normally.',
+              },
+            }
+          : {}),
+        ...('windowId' in properties
+          ? {
+              windowId: {
+                type: 'number',
+                description:
+                  'Optional consistency check: must match the window containing targetId. Omit normally.',
+              },
+            }
+          : {}),
+      },
+      required: [...new Set([...required, 'targetId'])],
+    },
+  };
+};
+
+const EXPOSED_TOOL_SCHEMAS: Tool[] = [
   {
     name: TOOL_NAMES.BROWSER.GET_WINDOWS_AND_TABS,
-    description: 'Get all currently open browser windows and tabs',
+    description:
+      'List browser windows and tabs. No targetId required. To operate on an existing tab, call this first, then chrome_target_bind with its tabId and your unique targetId.',
     inputSchema: {
       type: 'object',
       properties: {},
       required: [],
+    },
+  },
+  {
+    name: TOOL_NAMES.BROWSER.TARGET_CREATE,
+    description:
+      'START HERE for a new browser task: create a new tab/window AND bind it to your unique targetId in one call. No existing binding or separate bind call is needed. Wait for success, then pass the same targetId to all page tools. Use a distinct ID and tab per concurrent agent. To use an existing tab, use get_windows_and_tabs then chrome_target_bind instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        targetId: {
+          type: 'string',
+          description: 'Logical target identifier, e.g. "agent-a-main".',
+        },
+        url: { type: 'string', description: 'Initial URL to open. Defaults to about:blank.' },
+        newWindow: { type: 'boolean', description: 'Create a new window instead of a new tab.' },
+        windowId: {
+          type: 'number',
+          description: 'Existing window to create the tab in when newWindow is false.',
+        },
+        background: {
+          type: 'boolean',
+          description: 'Do not activate the tab or focus the window. Default: true.',
+        },
+        width: { type: 'number', description: 'New window width when newWindow is true.' },
+        height: { type: 'number', description: 'New window height when newWindow is true.' },
+      },
+      required: ['targetId'],
+    },
+  },
+  {
+    name: TOOL_NAMES.BROWSER.TARGET_BIND,
+    description:
+      'START HERE to use an existing tab: first call get_windows_and_tabs({}) to obtain tabId, then call this with tabId and a unique targetId. Wait for success before calling page tools with that targetId. Not needed after chrome_target_create, which already binds the new tab.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        targetId: { type: 'string', description: 'Logical target identifier.' },
+        tabId: { type: 'number', description: 'Existing Chrome tab ID to bind.' },
+      },
+      required: ['targetId', 'tabId'],
+    },
+  },
+  {
+    name: TOOL_NAMES.BROWSER.TARGET_LIST,
+    description:
+      'List logical targetId bindings and their current tab/window details. No arguments or existing target required. If your target is absent, call chrome_target_create or chrome_target_bind before page tools.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: TOOL_NAMES.BROWSER.TARGET_RELEASE,
+    description: 'Release a logical targetId binding and optionally close its tab.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        targetId: { type: 'string', description: 'Logical target identifier to release.' },
+        closeTab: { type: 'boolean', description: 'Close the bound tab as well. Default: false.' },
+      },
+      required: ['targetId'],
     },
   },
   // {
@@ -114,6 +252,11 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Auto-stop duration in milliseconds when autoStop is true (default 5000).',
         },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
       },
       required: [],
     },
@@ -131,6 +274,11 @@ export const TOOL_SCHEMAS: Tool[] = [
         filenamePrefix: {
           type: 'string',
           description: 'Optional filename prefix for the downloaded trace JSON.',
+        },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
       },
       required: [],
@@ -153,6 +301,11 @@ export const TOOL_SCHEMAS: Tool[] = [
           description:
             'Timeout for deep analysis via native host (milliseconds). Default 60000. Increase for large traces.',
         },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
       },
       required: [],
     },
@@ -160,7 +313,7 @@ export const TOOL_SCHEMAS: Tool[] = [
   {
     name: TOOL_NAMES.BROWSER.READ_PAGE,
     description:
-      'Get an accessibility tree representation of visible elements on the page. Only returns elements that are visible in the viewport. Optionally filter for only interactive elements.\nTip: If the returned elements do not include the specific element you need, use the computer tool\'s screenshot (action="screenshot") to capture the element\'s on-screen coordinates, then operate by coordinates.',
+      'Get an accessibility tree representation of visible elements on the page. Only returns elements that are visible in the viewport. Optionally filter for only interactive elements.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -183,6 +336,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Target an existing tab by ID (default: active tab).',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description: 'Target window ID to pick active tab when tabId is omitted.',
@@ -194,11 +351,15 @@ export const TOOL_SCHEMAS: Tool[] = [
   {
     name: TOOL_NAMES.BROWSER.COMPUTER,
     description:
-      "Use a mouse and keyboard to interact with a web browser, and take screenshots.\n* Whenever you intend to click on an element like an icon, you should consult a read_page to determine the ref of the element before moving the cursor.\n* If you tried clicking on a program or link but it failed to load, even after waiting, try screenshot and then adjusting your click location so that the tip of the cursor visually falls on the element that you want to click.\n* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges unless asked.",
+      "Use a mouse and keyboard to interact with a web browser.\n* Whenever you intend to click on an element like an icon, you should consult a read_page to determine the ref of the element before moving the cursor.\n* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges unless asked.",
     inputSchema: {
       type: 'object',
       properties: {
         tabId: { type: 'number', description: 'Target tab ID (default: active tab)' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         background: {
           type: 'boolean',
           description:
@@ -267,7 +428,7 @@ export const TOOL_SCHEMAS: Tool[] = [
         region: {
           type: 'object',
           description:
-            'For action=zoom: rectangular region to capture (x0,y0)-(x1,y1) in viewport pixels (or screenshot-space if a recent screenshot context exists).',
+            'For action=zoom: rectangular region to capture (x0,y0)-(x1,y1) in viewport pixels.',
           properties: {
             x0: { type: 'number' },
             y0: { type: 'number' },
@@ -415,6 +576,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           description:
             'Target an existing tab by ID (if provided, navigate/refresh/back/forward that tab instead of the active tab).',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description:
@@ -445,48 +610,6 @@ export const TOOL_SCHEMAS: Tool[] = [
     },
   },
   {
-    name: TOOL_NAMES.BROWSER.SCREENSHOT,
-    description:
-      '[Prefer read_page over taking a screenshot and Prefer chrome_computer] Take a screenshot of the current page or a specific element. For new usage, use chrome_computer with action="screenshot". Use this tool if you need advanced options.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Name for the screenshot, if saving as PNG' },
-        selector: { type: 'string', description: 'CSS selector for element to screenshot' },
-        tabId: {
-          type: 'number',
-          description: 'Target tab ID to capture from (default: active tab).',
-        },
-        windowId: {
-          type: 'number',
-          description: 'Target window ID to pick active tab from when tabId is not provided.',
-        },
-        background: {
-          type: 'boolean',
-          description:
-            'Attempt capture without bringing tab/window to foreground. CDP-based capture is used for simple viewport captures. For element/full-page capture, the tab may still be made active in its window without focusing the window. Default: false',
-        },
-        width: { type: 'number', description: 'Width in pixels (default: 800)' },
-        height: { type: 'number', description: 'Height in pixels (default: 600)' },
-        storeBase64: {
-          type: 'boolean',
-          description:
-            'return screenshot in base64 format (default: false) if you want to see the page, recommend set this to be true',
-        },
-        fullPage: {
-          type: 'boolean',
-          description: 'Store screenshot of the entire page (default: true)',
-        },
-        savePng: {
-          type: 'boolean',
-          description:
-            'Save screenshot as PNG file (default: true)，if you want to see the page, recommend set this to be false, and set storeBase64 to be true',
-        },
-      },
-      required: [],
-    },
-  },
-  {
     name: TOOL_NAMES.BROWSER.CLOSE_TABS,
     description: 'Close one or more browser tabs',
     inputSchema: {
@@ -496,6 +619,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'array',
           items: { type: 'number' },
           description: 'Array of tab IDs to close. If not provided, will close the active tab.',
+        },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind to close.',
         },
         url: {
           type: 'string',
@@ -513,14 +640,19 @@ export const TOOL_SCHEMAS: Tool[] = [
       properties: {
         tabId: {
           type: 'number',
-          description: 'The ID of the tab to switch to.',
+          description: 'The ID of the tab to switch to. targetId is preferred when available.',
+        },
+        targetId: {
+          type: 'string',
+          description:
+            'Logical target ID from chrome_target_create/chrome_target_bind to switch to.',
         },
         windowId: {
           type: 'number',
           description: 'The ID of the window where the tab is located.',
         },
       },
-      required: ['tabId'],
+      required: [],
     },
   },
   {
@@ -536,6 +668,10 @@ export const TOOL_SCHEMAS: Tool[] = [
         tabId: {
           type: 'number',
           description: 'Target an existing tab by ID (default: active tab).',
+        },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
         background: {
           type: 'boolean',
@@ -592,6 +728,11 @@ export const TOOL_SCHEMAS: Tool[] = [
           description:
             'Multipart/form-data descriptor. If provided, overrides body and builds FormData with optional file attachments. Shape: { fields?: Record<string,string|number|boolean>, files?: Array<{ name: string, fileUrl?: string, filePath?: string, base64Data?: string, filename?: string, contentType?: string }> }. Also supports a compact array form: [ [name, fileSpec, filename?], ... ] where fileSpec may be url:, file:, or base64:.',
         },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
       },
       required: ['url'],
     },
@@ -629,6 +770,11 @@ export const TOOL_SCHEMAS: Tool[] = [
         includeStatic: {
           type: 'boolean',
           description: 'Include static resources like images/scripts/styles (default: false)',
+        },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
       },
       required: ['action'],
@@ -728,6 +874,12 @@ export const TOOL_SCHEMAS: Tool[] = [
         createFolder: {
           type: 'boolean',
           description: 'Whether to create the parent folder if it does not exist (default: false)',
+        },
+        tabId: { type: 'number', description: 'Target tab ID when url is omitted.' },
+        targetId: {
+          type: 'string',
+          description:
+            'Logical target ID from chrome_target_create/chrome_target_bind when url is omitted.',
         },
       },
       required: [],
@@ -850,6 +1002,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Target tab ID. If omitted, uses the current active tab.',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         timeoutMs: {
           type: 'number',
           description: 'Execution timeout in milliseconds (default: 15000).',
@@ -923,6 +1079,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Target tab ID. If omitted, uses the current active tab.',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description: 'Window ID to select active tab from (when tabId is omitted).',
@@ -963,6 +1123,10 @@ export const TOOL_SCHEMAS: Tool[] = [
         tabId: {
           type: 'number',
           description: 'Target tab ID. If omitted, uses the current active tab.',
+        },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
         windowId: {
           type: 'number',
@@ -1019,6 +1183,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Target tab ID. If omitted, uses the current active tab.',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description: 'Window ID to select active tab from (when tabId is omitted).',
@@ -1056,6 +1224,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description: 'Target tab ID. If omitted, uses the current active tab.',
         },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description: 'Window ID to select active tab from (when tabId is omitted).',
@@ -1083,6 +1255,10 @@ export const TOOL_SCHEMAS: Tool[] = [
         tabId: {
           type: 'number',
           description: 'Target an existing tab by ID (default: active tab).',
+        },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
         windowId: {
           type: 'number',
@@ -1148,6 +1324,10 @@ export const TOOL_SCHEMAS: Tool[] = [
       type: 'object',
       properties: {
         tabId: { type: 'number', description: 'Target tab ID (default: active tab)' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
         windowId: {
           type: 'number',
           description: 'Target window ID to pick active tab when tabId is omitted',
@@ -1191,6 +1371,11 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'string',
           description: 'Optional prompt text when accepting a prompt',
         },
+        tabId: { type: 'number', description: 'Target tab ID (default: active tab).' },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
+        },
       },
       required: ['action'],
     },
@@ -1212,6 +1397,10 @@ export const TOOL_SCHEMAS: Tool[] = [
           type: 'number',
           description:
             'Target tab ID (default: active tab). Used with "start"/"auto_start" for recording, and with "export" (download=false) for drag&drop upload target.',
+        },
+        targetId: {
+          type: 'string',
+          description: 'Logical target ID from chrome_target_create/chrome_target_bind.',
         },
         fps: {
           type: 'number',
@@ -1398,3 +1587,37 @@ export const TOOL_SCHEMAS: Tool[] = [
     },
   },
 ];
+
+EXPOSED_TOOL_SCHEMAS.push({
+  name: TOOL_NAMES.BROWSER.SCREENSHOT,
+  description: `Capture the bound tab viewport, full page, or CSS-selected element without switching tabs. ${SCREENSHOT_OUTPUT_DESCRIPTION} For a quick viewport capture, chrome_computer action="screenshot" supports the same output option.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      output: SCREENSHOT_OUTPUT_SCHEMA,
+      name: { type: 'string', description: 'Filename prefix when saving a PNG.' },
+      selector: { type: 'string', description: 'CSS selector of the element to capture.' },
+      fullPage: {
+        type: 'boolean',
+        default: false,
+        description: 'Capture the full page rather than the viewport.',
+      },
+      storeBase64: {
+        type: 'boolean',
+        description:
+          'Legacy alias: true selects base64 when output is omitted. Prefer the output parameter; explicit output takes precedence.',
+      },
+      savePng: { type: 'boolean', default: false, description: 'Also download a PNG file.' },
+      width: { type: 'number', exclusiveMinimum: 0, description: 'Output width in CSS pixels.' },
+      height: { type: 'number', exclusiveMinimum: 0, description: 'Output height in CSS pixels.' },
+      maxHeight: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        description: 'Maximum full-page capture height in physical pixels (default 50000).',
+      },
+    },
+    required: [],
+  },
+});
+
+export const TOOL_SCHEMAS: Tool[] = EXPOSED_TOOL_SCHEMAS.map(withRequiredTargetId);

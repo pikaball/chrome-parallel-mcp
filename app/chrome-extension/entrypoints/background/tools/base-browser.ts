@@ -1,6 +1,7 @@
 import { ToolExecutor } from '@/common/tool-handler';
 import type { ToolResult } from '@/common/tool-handler';
 import { TIMEOUTS, ERROR_MESSAGES } from '@/common/constants';
+import { targetRegistry } from './browser/target-registry';
 
 const PING_TIMEOUT_MS = 300;
 
@@ -121,6 +122,34 @@ export abstract class BaseBrowserToolExecutor implements ToolExecutor {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Resolve a page target without relying on global active-tab state when tabId/targetId is provided.
+   */
+  protected async resolveTargetTab(args?: {
+    tabId?: number;
+    targetId?: string;
+    windowId?: number;
+  }): Promise<chrome.tabs.Tab> {
+    if (args?.targetId !== undefined) {
+      const target = await targetRegistry.resolve(args.targetId);
+      if (!target) throw new Error('targetId must be a non-empty string');
+      if (args.tabId !== undefined && args.tabId !== target.id) {
+        throw new Error(`tabId ${args.tabId} does not match targetId ${args.targetId}`);
+      }
+      if (args.windowId !== undefined && args.windowId !== target.windowId) {
+        throw new Error(`windowId ${args.windowId} does not match targetId ${args.targetId}`);
+      }
+      return target;
+    }
+    if (args?.tabId !== undefined) {
+      const explicit = await this.tryGetTab(args.tabId);
+      if (!explicit) throw new Error(`Tab not found: ${args.tabId}`);
+      return explicit;
+    }
+
+    return await this.getActiveTabOrThrowInWindow(args?.windowId);
   }
 
   /**

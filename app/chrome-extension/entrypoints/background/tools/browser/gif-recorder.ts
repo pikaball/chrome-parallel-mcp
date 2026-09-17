@@ -64,6 +64,8 @@ type GifRecorderAction =
 interface GifRecorderParams {
   action: GifRecorderAction;
   tabId?: number;
+  targetId?: string;
+  windowId?: number;
   fps?: number;
   durationMs?: number;
   maxFrames?: number;
@@ -627,10 +629,23 @@ class GifRecorderTool extends BaseBrowserToolExecutor {
     }
 
     try {
+      const targetTab = await this.resolveTargetTab(args);
+      const ownerTabId =
+        action === 'export'
+          ? lastRecordedGif?.tabId
+          : (autoCaptureMetadata?.tabId ?? recordingState?.tabId);
+      if (ownerTabId !== undefined && ownerTabId !== targetTab.id) {
+        return createErrorResponse(
+          'GIF recorder is owned by another target. This recorder supports one active target at a time.',
+        );
+      }
+      if (action === 'clear' && lastRecordedGif && lastRecordedGif.tabId !== targetTab.id) {
+        return createErrorResponse('Cannot clear a GIF owned by another target.');
+      }
       switch (action) {
         case 'start': {
           // Fixed-FPS mode: captures frames at regular intervals
-          const tab = await this.resolveTargetTab(args.tabId);
+          const tab = await this.resolveTargetTab(args);
           if (!tab?.id) {
             return createErrorResponse(
               typeof args.tabId === 'number'
@@ -679,7 +694,7 @@ class GifRecorderTool extends BaseBrowserToolExecutor {
 
         case 'auto_start': {
           // Auto-capture mode: captures frames when tools succeed
-          const tab = await this.resolveTargetTab(args.tabId);
+          const tab = await this.resolveTargetTab(args);
           if (!tab?.id) {
             return createErrorResponse(
               typeof args.tabId === 'number'
@@ -752,7 +767,7 @@ class GifRecorderTool extends BaseBrowserToolExecutor {
 
         case 'capture': {
           // Manual frame capture in auto mode
-          const tab = await this.resolveTargetTab(args.tabId);
+          const tab = await this.resolveTargetTab(args);
           if (!tab?.id) {
             return createErrorResponse(
               typeof args.tabId === 'number'
@@ -1028,7 +1043,7 @@ class GifRecorderTool extends BaseBrowserToolExecutor {
             }
 
             // Resolve target tab
-            const tab = await this.resolveTargetTab(args.tabId);
+            const tab = await this.resolveTargetTab(args);
             if (!tab?.id) {
               return createErrorResponse(
                 typeof args.tabId === 'number'
@@ -1209,17 +1224,6 @@ class GifRecorderTool extends BaseBrowserToolExecutor {
       url.startsWith('https://chrome.google.com/webstore') ||
       url.startsWith('https://microsoftedge.microsoft.com/')
     );
-  }
-
-  private async resolveTargetTab(tabId?: number): Promise<chrome.tabs.Tab | null> {
-    if (typeof tabId === 'number') {
-      return this.tryGetTab(tabId);
-    }
-    try {
-      return await this.getActiveTabOrThrow();
-    } catch {
-      return null;
-    }
   }
 
   private buildResponse(result: GifResult): ToolResult {

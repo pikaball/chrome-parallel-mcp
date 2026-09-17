@@ -32,6 +32,7 @@ import { createExecutor, type StepExecutorInterface } from './runners/step-execu
 import { createReplayActionRegistry } from '../actions/handlers';
 
 export interface RunOptions {
+  tabId?: number;
   tabTarget?: 'current' | 'new';
   refresh?: boolean;
   captureNetwork?: boolean;
@@ -240,6 +241,7 @@ class ExecutionOrchestrator {
     }
 
     const ensured = await ensureTab({
+      tabId: this.options.tabId,
       tabTarget: this.options.tabTarget,
       startUrl: this.options.startUrl || derivedStartUrl,
       refresh: this.options.refresh,

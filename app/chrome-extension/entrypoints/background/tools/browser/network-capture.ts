@@ -13,6 +13,9 @@ interface NetworkCaptureToolParams {
   maxCaptureTime?: number;
   inactivityTimeout?: number;
   includeStatic?: boolean;
+  tabId?: number;
+  targetId?: string;
+  windowId?: number;
 }
 
 /**
@@ -47,18 +50,18 @@ function decorateJsonResult(result: ToolResult, extra: Record<string, unknown>):
 /**
  * Check if debugger-based capture is active
  */
-function isDebuggerCaptureActive(): boolean {
+function isDebuggerCaptureActive(tabId: number): boolean {
   const captureData = (
     networkDebuggerStartTool as unknown as { captureData?: Map<number, unknown> }
   ).captureData;
-  return captureData instanceof Map && captureData.size > 0;
+  return captureData instanceof Map && captureData.has(tabId);
 }
 
 /**
  * Check if webRequest-based capture is active
  */
-function isWebRequestCaptureActive(): boolean {
-  return networkCaptureStartTool.captureData.size > 0;
+function isWebRequestCaptureActive(tabId: number): boolean {
+  return networkCaptureStartTool.captureData.has(tabId);
 }
 
 /**
@@ -78,9 +81,11 @@ class NetworkCaptureTool extends BaseBrowserToolExecutor {
       return createErrorResponse('Parameter [action] is required and must be one of: start, stop');
     }
 
+    const tab = await this.resolveTargetTab(args);
+    args = { ...args, tabId: tab.id, windowId: tab.windowId };
     const wantBody = args?.needResponseBody === true;
-    const debuggerActive = isDebuggerCaptureActive();
-    const webActive = isWebRequestCaptureActive();
+    const debuggerActive = isDebuggerCaptureActive(tab.id!);
+    const webActive = isWebRequestCaptureActive(tab.id!);
 
     if (action === 'start') {
       return this.handleStart(args, wantBody, debuggerActive, webActive);
@@ -111,6 +116,8 @@ class NetworkCaptureTool extends BaseBrowserToolExecutor {
       maxCaptureTime: args.maxCaptureTime,
       inactivityTimeout: args.inactivityTimeout,
       includeStatic: args.includeStatic,
+      tabId: args.tabId,
+      windowId: args.windowId,
     });
 
     return decorateJsonResult(result, { backend, needResponseBody: wantBody });
@@ -141,12 +148,12 @@ class NetworkCaptureTool extends BaseBrowserToolExecutor {
     }
 
     if (!backendToStop) {
-      return createErrorResponse('No active network captures found in any tab.');
+      return createErrorResponse('No active network captures found for this target.');
     }
 
     const delegateStop =
       backendToStop === 'debugger' ? networkDebuggerStopTool : networkCaptureStopTool;
-    const result = await delegateStop.execute();
+    const result = await delegateStop.execute({ tabId: args.tabId, windowId: args.windowId });
 
     return decorateJsonResult(result, {
       backend: backendToStop,

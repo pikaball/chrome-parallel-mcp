@@ -1,13 +1,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { setupTools } from './register-tools';
 
-export let mcpServer: Server | null = null;
-
-export const getMcpServer = () => {
-  if (mcpServer) {
-    return mcpServer;
-  }
-  mcpServer = new Server(
+/**
+ * Create a fresh MCP Server instance per session.
+ * Tool handlers are stateless (they forward calls to the Chrome extension via native messaging),
+ * so sharing them across instances is safe and allows concurrent multi-agent connections.
+ */
+export const createMcpServer = (): Server => {
+  const server = new Server(
     {
       name: 'ChromeMcpServer',
       version: '1.0.0',
@@ -19,6 +19,6 @@ export const getMcpServer = () => {
     },
   );
 
-  setupTools(mcpServer);
-  return mcpServer;
+  setupTools(server);
+  return server;
 };

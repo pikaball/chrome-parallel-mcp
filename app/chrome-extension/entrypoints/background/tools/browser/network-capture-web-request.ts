@@ -50,6 +50,9 @@ interface NetworkCaptureStartToolParams {
   maxCaptureTime?: number; // Maximum capture time (milliseconds)
   inactivityTimeout?: number; // Inactivity timeout (milliseconds)
   includeStatic?: boolean; // Whether to include static resources
+  tabId?: number;
+  targetId?: string;
+  windowId?: number;
 }
 
 interface NetworkRequestInfo {
@@ -800,7 +803,9 @@ class NetworkCaptureStartTool extends BaseBrowserToolExecutor {
       // Get current tab or create new tab
       let tabToOperateOn: chrome.tabs.Tab;
 
-      if (targetUrl) {
+      if (args.tabId || args.targetId) {
+        tabToOperateOn = await this.resolveTargetTab(args);
+      } else if (targetUrl) {
         // Find tabs matching the URL
         const matchingTabs = await chrome.tabs.query({ url: targetUrl });
 
@@ -884,7 +889,11 @@ class NetworkCaptureStopTool extends BaseBrowserToolExecutor {
     NetworkCaptureStopTool.instance = this;
   }
 
-  async execute(): Promise<ToolResult> {
+  async execute(args?: {
+    tabId?: number;
+    targetId?: string;
+    windowId?: number;
+  }): Promise<ToolResult> {
     console.log(`NetworkCaptureStopTool: Executing`);
 
     try {
@@ -895,7 +904,10 @@ class NetworkCaptureStopTool extends BaseBrowserToolExecutor {
       }
 
       // Get all tabs currently capturing
-      const ongoingCaptures = Array.from(startTool.captureData.keys());
+      const targetTab = await this.resolveTargetTab(args);
+      const ongoingCaptures = Array.from(startTool.captureData.keys()).filter(
+        (tabId) => tabId === targetTab.id,
+      );
       console.log(
         `NetworkCaptureStopTool: Found ${ongoingCaptures.length} ongoing captures: ${ongoingCaptures.join(', ')}`,
       );
@@ -904,9 +916,12 @@ class NetworkCaptureStopTool extends BaseBrowserToolExecutor {
         return createErrorResponse('No active network captures found in any tab.');
       }
 
-      // Get current active tab
-      const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const activeTabId = activeTabs[0]?.id;
+      let activeTabId: number | undefined;
+      try {
+        activeTabId = (await this.resolveTargetTab(args))?.id;
+      } catch {
+        activeTabId = undefined;
+      }
 
       // Determine the primary tab to stop
       let primaryTabId: number;

@@ -1,11 +1,24 @@
-# Chrome MCP Server API Reference 📚
+# Chrome Parallel MCP Tool Reference
+
+For fork installation, updates, and concurrency limits, start with the [README](../README.md). The current [tool schemas](../packages/shared/src/tools.ts) are authoritative; older examples below may omit the now-required `targetId` or describe internal tools not exposed through MCP.
+
+Both screenshot modes require target-aware capture metadata from the updated extension. Legacy image format support does not permit unverified active-tab captures. Reload both components after updating.
 
 Complete reference for all available tools and their parameters.
+
+## Target Setup and Screenshots
+
+Screenshot output defaults to `output: "file"` (recommended): the native server writes a PNG or JPEG under `/tmp/chrome-mcp-screenshots` and returns `filePath` and `mimeType`, using the matching `.png` or `.jpg` extension. Both MCP image content and legacy JSON `base64Data` responses are supported. Read the file with your image-reading tool first. If that path is inaccessible, repeat the call with `output: "base64"` to receive the original image response directly. This option applies to both `chrome_screenshot` and `chrome_computer` with `action: "screenshot"`. Explicit `output` overrides the legacy `storeBase64` option; `storeBase64: true` without `output` selects base64. Files remain available until removed or cleaned by the host; `savePng` is a separate optional browser download.
+
+Before page tools, call `chrome_target_create({"targetId":"agent-a-main","url":"https://example.com"})`. This creates AND binds the tab. Alternatively, call `get_windows_and_tabs({})`, then `chrome_target_bind({"targetId":"agent-a-main","tabId":123})` for an existing tab. Wait for success and reuse the exact ID on subsequent calls. Use a unique ID and separate tab for each concurrent agent. Discovery tools `get_windows_and_tabs` and `chrome_target_list` require no target.
+
+An unknown, empty, closed, or mismatched target fails instead of falling back to the active tab. Omit `tabId` and `windowId` normally; when supplied, they must match the binding. Existing IDs cannot be rebound to another tab without release, and a tab cannot belong to two IDs. Bindings currently last only for the extension service worker lifetime; recreate or rebind after a restart.
+
+Use `chrome_screenshot({"targetId":"agent-a-main"})` or `chrome_computer({"targetId":"agent-a-main","action":"screenshot"})` to receive a screenshot file path. `chrome_screenshot` supports `fullPage`, `selector`, `width`, `height`, `maxHeight`, `output` (default file), and `savePng` (default false). Captures address the bound tab through CDP; a debugger failure returns an error. GIF recording currently supports one active target at a time and rejects operations from other targets. With `targetId`, `chrome_close_tabs` closes only its bound tab; omit `url` and `tabIds`.
 
 ## 📋 Table of Contents
 
 - [Browser Management](#browser-management)
-- [Screenshots & Visual](#screenshots--visual)
 - [Network Monitoring](#network-monitoring)
 - [Content Analysis](#content-analysis)
 - [Interaction](#interaction)
@@ -117,48 +130,6 @@ Navigate browser history.
 {
   "direction": "back",
   "tabId": 123
-}
-```
-
-## 📸 Screenshots & Visual
-
-### `chrome_screenshot`
-
-Take advanced screenshots with various options.
-
-**Parameters**:
-
-- `name` (string, optional): Screenshot filename
-- `selector` (string, optional): CSS selector for element screenshot
-- `tabId` (number, optional): Target tab to capture (default: active tab)
-- `background` (boolean, optional): Attempt capture without bringing tab/window to foreground (viewport-only uses CDP)
-- `width` (number, optional): Width in pixels (default: 800)
-- `height` (number, optional): Height in pixels (default: 600)
-- `storeBase64` (boolean, optional): Return base64 data (default: false)
-- `fullPage` (boolean, optional): Capture full page (default: true)
-
-**Example**:
-
-```json
-{
-  "selector": ".main-content",
-  "fullPage": true,
-  "storeBase64": true,
-  "width": 1920,
-  "height": 1080
-}
-```
-
-**Response**:
-
-```json
-{
-  "success": true,
-  "base64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
-  "dimensions": {
-    "width": 1920,
-    "height": 1080
-  }
 }
 ```
 
@@ -340,11 +311,11 @@ Replaced by `chrome_read_page` as the primary discovery tool. The `read_page` im
 
 ### `chrome_computer`
 
-Unified advanced interaction tool that prioritizes high-level DOM actions with CDP fallback. Supports hover, click, drag, scroll, typing, key chords, fill, wait and screenshot. If a recent screenshot was taken via `chrome_screenshot`, coordinates are auto-scaled from screenshot space to viewport space.
+Unified advanced interaction tool that prioritizes high-level DOM actions with CDP fallback. Supports hover, click, drag, scroll, typing, key chords, fill, wait and zoom.
 
 Parameters:
 
-- `action` (string, required): `left_click` | `right_click` | `double_click` | `triple_click` | `left_click_drag` | `scroll` | `type` | `key` | `fill` | `hover` | `wait` | `screenshot`
+- `action` (string, required): `left_click` | `right_click` | `double_click` | `triple_click` | `left_click_drag` | `scroll` | `type` | `key` | `fill` | `hover` | `wait` | `zoom`
 - `tabId` (number, optional): Target an existing tab by ID (default: active tab)
 - `background` (boolean, optional): Avoid focusing/activating tab/window for certain operations (best-effort)
 - `ref` (string, optional): element ref from `chrome_read_page` (preferred). Used for click/scroll/type/key and as drag end when provided
@@ -565,31 +536,25 @@ await callTool('chrome_navigate', {
   url: 'https://example.com',
 });
 
-// 2. Take a screenshot
-const screenshot = await callTool('chrome_screenshot', {
-  fullPage: true,
-  storeBase64: true,
-});
-
-// 3. Start network monitoring
+// 2. Start network monitoring
 await callTool('chrome_network_capture_start', {
   maxCaptureTime: 30000,
 });
 
-// 4. Interact with the page
+// 3. Interact with the page
 await callTool('chrome_click_element', {
   selector: '#load-data-button',
 });
 
-// 5. Search content semantically
+// 4. Search content semantically
 const searchResults = await callTool('search_tabs_content', {
   query: 'user data analysis',
 });
 
-// 6. Stop network capture
+// 5. Stop network capture
 const networkData = await callTool('chrome_network_capture_stop');
 
-// 7. Save bookmark
+// 6. Save bookmark
 await callTool('chrome_bookmark_add', {
   title: 'Data Analysis Page',
   parentId: 'Work/Analytics',

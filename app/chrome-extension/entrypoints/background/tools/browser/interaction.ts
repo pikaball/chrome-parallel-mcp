@@ -23,6 +23,7 @@ interface ClickToolParams {
   cancelable?: boolean;
   modifiers?: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean };
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   windowId?: number; // when no tabId, pick active tab from this window
 }
 
@@ -58,9 +59,7 @@ class ClickTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      // Resolve tab
-      const explicit = await this.tryGetTab(args.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id) {
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
       }
@@ -163,6 +162,7 @@ interface FillToolParams {
   value: string | number | boolean;
   frameId?: number;
   tabId?: number; // target existing tab id
+  targetId?: string; // logical multi-agent target id
   windowId?: number; // when no tabId, pick active tab from this window
 }
 
@@ -189,8 +189,7 @@ class FillTool extends BaseBrowserToolExecutor {
     }
 
     try {
-      const explicit = await this.tryGetTab(args.tabId);
-      const tab = explicit || (await this.getActiveTabOrThrowInWindow(args.windowId));
+      const tab = await this.resolveTargetTab(args);
       if (!tab.id) {
         return createErrorResponse(ERROR_MESSAGES.TAB_NOT_FOUND + ': Active tab has no ID');
       }
